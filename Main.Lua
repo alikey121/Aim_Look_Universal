@@ -71,7 +71,13 @@ end
 
 local MainToggleButton = createCircularButton("Js", UDim2.new(0, 20, 0, 150), "Js")
 local AimButton = createCircularButton("Aim", UDim2.new(0, 20, 0, 220), "Aim")
+
+-- Aquí le aplicamos el tamaño más grande y lo bajamos un pelo para que no choque
+AimButton.Size = UDim2.new(0, 70, 0, 70) 
+AimButton.Position = UDim2.new(0, 20, 0, 230) 
+
 AimButton.Visible = false 
+ 
 
 -- Ajustamos el tamaño del menú para albergar la whitelist cómodamente
 local MainFrame = Instance.new("Frame")
