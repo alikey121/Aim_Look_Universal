@@ -3,18 +3,21 @@ local UserInputService = game:GetService("UserInputService")
 local RunService = game:GetService("RunService")
 local LocalPlayer = Players.LocalPlayer
 local Camera = workspace.CurrentCamera
+local CoreGui = game:GetService("CoreGui")
 
 local Config = {
-    AimEnabled = false,   
-    Whitelist = {},       -- Guardará los jugadores ignorados por el Aim
-    SpyEnabled = false,
-    UILocked = false      
+    AimEnabled = false,  -- CORREGIDO: Empieza desactivado     
+    FOVSize = 150,             
+    ShowFOV = false,          
+    Whitelist = {},       
+    UILocked = false,
+    SpyEnabled = false 
 }
 
-local AimLockActive = false
-local currentTarget = nil
-local aimLoopConnection = nil
-local CoreGui = game:GetService("CoreGui")
+local LookActive = false
+local currentLookTarget = nil
+local DropdownConnections = {}
+local SpyConnections = {} 
 
 if CoreGui:FindFirstChild("JsLikeBetaMenu") then
     CoreGui.JsLikeBetaMenu:Destroy()
@@ -25,7 +28,68 @@ ScreenGui.Name = "JsLikeBetaMenu"
 ScreenGui.ResetOnSpawn = false
 ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 ScreenGui.DisplayOrder = 9999
+ScreenGui.IgnoreGuiInset = true -- CORRECCIÓN CRUCIAL: Centra todo ignorando el desfase de Roblox
 ScreenGui.Parent = CoreGui
+
+-- PUNTITO CENTRAL (REFERENCIA DE MIRA - CORREGIDO A 4x4)
+local CenterDot = Instance.new("Frame")
+CenterDot.Name = "CenterDot"
+CenterDot.AnchorPoint = Vector2.new(0.5, 0.5)
+CenterDot.Position = UDim2.new(0.5, 0, 0.5, 0)
+CenterDot.Size = UDim2.new(0, 4, 0, 4) -- Ajustado a 4x4 píxeles como pediste
+CenterDot.BackgroundColor3 = Color3.fromRGB(0, 0, 0) 
+CenterDot.BorderSizePixel = 0
+CenterDot.Visible = false
+CenterDot.Parent = ScreenGui
+
+Instance.new("UICorner", CenterDot).CornerRadius = UDim.new(1, 0) 
+
+local DotStroke = Instance.new("UIStroke")
+DotStroke.Color = Color3.fromRGB(255, 30, 30) 
+DotStroke.Thickness = 1
+DotStroke.Parent = CenterDot
+
+-- Capa Base FOV: Sombra Negra
+local FOVCircleBlack = Instance.new("Frame")
+FOVCircleBlack.Name = "FOVCircleBlack"
+FOVCircleBlack.AnchorPoint = Vector2.new(0.5, 0.5)
+FOVCircleBlack.Position = UDim2.new(0.5, 0, 0.5, 0)
+FOVCircleBlack.BackgroundTransparency = 1
+FOVCircleBlack.Visible = false
+FOVCircleBlack.Parent = ScreenGui
+Instance.new("UICorner", FOVCircleBlack).CornerRadius = UDim.new(1, 0)
+
+local StrokeBlack = Instance.new("UIStroke")
+StrokeBlack.Color = Color3.fromRGB(0, 0, 0)
+StrokeBlack.Thickness = 3.5
+StrokeBlack.Parent = FOVCircleBlack
+
+-- Capa Superior FOV: Línea Neón Roja
+local FOVCircleRed = Instance.new("Frame")
+FOVCircleRed.Name = "FOVCircleRed"
+FOVCircleRed.AnchorPoint = Vector2.new(0.5, 0.5)
+FOVCircleRed.Position = UDim2.new(0.5, 0, 0.5, 0)
+FOVCircleRed.BackgroundTransparency = 1
+FOVCircleRed.Visible = false
+FOVCircleRed.Parent = ScreenGui
+Instance.new("UICorner", FOVCircleRed).CornerRadius = UDim.new(1, 0)
+
+local StrokeRed = Instance.new("UIStroke")
+StrokeRed.Color = Color3.fromRGB(255, 30, 30)
+StrokeRed.Thickness = 1.5
+StrokeRed.Parent = FOVCircleRed
+
+local function updateFOVVisual()
+    local diameter = Config.FOVSize * 2
+    
+    FOVCircleBlack.Size = UDim2.new(0, diameter, 0, diameter)
+    FOVCircleBlack.Visible = Config.ShowFOV
+    
+    FOVCircleRed.Size = UDim2.new(0, diameter, 0, diameter)
+    FOVCircleRed.Visible = Config.ShowFOV
+    
+    CenterDot.Visible = Config.ShowFOV
+end
 
 local function makeMobileDraggable(gui)
     local dragging, dragStart, startPos
@@ -49,15 +113,16 @@ local function makeMobileDraggable(gui)
     end)
 end
 
+-- Botones circulares
 local function createCircularButton(name, pos, text)
     local btn = Instance.new("TextButton")
     btn.Size = UDim2.new(0, 55, 0, 55)
     btn.Position = pos
-    btn.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+    btn.BackgroundColor3 = Color3.fromRGB(15, 15, 15)
     btn.Text = text
-    btn.TextColor3 = Color3.fromRGB(255, 0, 0)
-    btn.TextSize = 20
-    btn.Font = Enum.Font.SourceSansBold
+    btn.TextColor3 = Color3.fromRGB(255, 50, 50)
+    btn.TextSize = 18
+    btn.Font = Enum.Font.GothamBold
     btn.Active = true
     btn.Parent = ScreenGui
 
@@ -65,252 +130,309 @@ local function createCircularButton(name, pos, text)
     corner.CornerRadius = UDim.new(1, 0) 
     corner.Parent = btn
 
+    local stroke = Instance.new("UIStroke")
+    stroke.Color = Color3.fromRGB(255, 0, 0)
+    stroke.Thickness = 1.5
+    stroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+    stroke.Parent = btn
+
     makeMobileDraggable(btn)
     return btn
 end
 
 local MainToggleButton = createCircularButton("Js", UDim2.new(0, 20, 0, 150), "Js")
-local AimButton = createCircularButton("Aim", UDim2.new(0, 20, 0, 220), "Aim")
+local LookButton = createCircularButton("Look", UDim2.new(0, 20, 0, 220), "Look")
 
--- Aquí le aplicamos el tamaño más grande y lo bajamos un pelo para que no choque
-AimButton.Size = UDim2.new(0, 70, 0, 70) 
-AimButton.Position = UDim2.new(0, 20, 0, 230) 
+LookButton.Size = UDim2.new(0, 60, 0, 60)
+LookButton.Visible = false -- CORREGIDO: Empieza totalmente oculto en la ejecución
 
-AimButton.Visible = false 
- 
-
--- Ajustamos el tamaño del menú para albergar la whitelist cómodamente
+-- Panel Principal
 local MainFrame = Instance.new("Frame")
-MainFrame.Size = UDim2.new(0, 320, 0, 210)
-MainFrame.Position = UDim2.new(0.5, -160, 0.5, -105)
-MainFrame.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
-MainFrame.BorderSizePixel = 2
-MainFrame.BorderColor3 = Color3.fromRGB(255, 0, 0)
+MainFrame.Size = UDim2.new(0, 340, 0, 310) 
+MainFrame.Position = UDim2.new(0.5, -170, 0.5, -155)
+MainFrame.BackgroundColor3 = Color3.fromRGB(12, 12, 12)
+MainFrame.BackgroundTransparency = 0.05
+MainFrame.BorderSizePixel = 0
 MainFrame.Visible = false
 MainFrame.Parent = ScreenGui
-Instance.new("UICorner", MainFrame).CornerRadius = UDim.new(0, 10)
 
-MainToggleButton.MouseButton1Click:Connect(function()
-    MainFrame.Visible = not MainFrame.Visible
-end)
+Instance.new("UICorner", MainFrame).CornerRadius = UDim.new(0, 12)
 
+local PanelStroke = Instance.new("UIStroke")
+PanelStroke.Color = Color3.fromRGB(230, 0, 0)
+PanelStroke.Thickness = 2
+PanelStroke.Parent = MainFrame
+
+-- Barra superior
 local TabBar = Instance.new("Frame")
-TabBar.Size = UDim2.new(1, 0, 0, 35)
-TabBar.BackgroundColor3 = Color3.fromRGB(15, 0, 0)
+TabBar.Size = UDim2.new(1, 0, 0, 40)
+TabBar.BackgroundColor3 = Color3.fromRGB(20, 5, 5)
 TabBar.BorderSizePixel = 0
 TabBar.Parent = MainFrame
+Instance.new("UICorner", TabBar).CornerRadius = UDim.new(0, 12)
+
+local LineFix = Instance.new("Frame")
+LineFix.Size = UDim2.new(1, 0, 0, 10)
+LineFix.Position = UDim2.new(0, 0, 1, -10)
+LineFix.BackgroundColor3 = Color3.fromRGB(20, 5, 5)
+LineFix.BorderSizePixel = 0
+LineFix.Parent = TabBar
 
 local TitleLabel = Instance.new("TextLabel")
 TitleLabel.Size = UDim2.new(1, 0, 1, 0)
-TitleLabel.Position = UDim2.new(0, 12, 0, 0)
+TitleLabel.Position = UDim2.new(0, 15, 0, 0)
 TitleLabel.BackgroundTransparency = 1
-TitleLabel.Text = "Js Like Beta - Panel Config"
-TitleLabel.TextColor3 = Color3.fromRGB(255, 0, 0)
+TitleLabel.Text = "Js Like Beta  //  Panel"
+TitleLabel.TextColor3 = Color3.fromRGB(255, 60, 60)
 TitleLabel.TextSize = 14
-TitleLabel.Font = Enum.Font.SourceSansBold
+TitleLabel.Font = Enum.Font.GothamBold
 TitleLabel.TextXAlignment = Enum.TextXAlignment.Left
 TitleLabel.Parent = TabBar
 
 local ContentFrame = Instance.new("Frame")
-ContentFrame.Size = UDim2.new(1, 0, 1, -35)
-ContentFrame.Position = UDim2.new(0, 0, 0, 35)
+ContentFrame.Size = UDim2.new(1, 0, 1, -40)
+ContentFrame.Position = UDim2.new(0, 0, 0, 40)
 ContentFrame.BackgroundTransparency = 1
 ContentFrame.Parent = MainFrame
 
--- [CONFIG AIM]
-local AimSwitchLabel = Instance.new("TextLabel")
-AimSwitchLabel.Size = UDim2.new(0, 180, 0, 30)
-AimSwitchLabel.Position = UDim2.new(0, 15, 0, 15)
-AimSwitchLabel.BackgroundTransparency = 1
-AimSwitchLabel.Text = "Habilitar Botón Aim"
-AimSwitchLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
-AimSwitchLabel.TextXAlignment = Enum.TextXAlignment.Left
-AimSwitchLabel.Font = Enum.Font.SourceSans
-AimSwitchLabel.TextSize = 16
-AimSwitchLabel.Parent = ContentFrame
+-- Lógica del ESP (Spy)
+local function createSpyTag(player)
+    if player == LocalPlayer then return end
+    
+    local function setupCharacter(char)
+        if char:FindFirstChild("SpyTag") then char.SpyTag:Destroy() end
+        local head = char:WaitForChild("Head", 5)
+        if not head then return end
+        
+        local bb = Instance.new("BillboardGui")
+        bb.Name = "SpyTag"
+        bb.Size = UDim2.new(0, 150, 0, 30)
+        bb.AlwaysOnTop = true
+        bb.Adornee = head
+        bb.StudsOffset = Vector3.new(0, 1.2, 0) 
+        bb.Parent = char
+        
+        local text = Instance.new("TextLabel")
+        text.Size = UDim2.new(1, 0, 1, 0)
+        text.BackgroundTransparency = 1
+        text.Text = player.Name
+        text.TextColor3 = Color3.fromRGB(255, 50, 50) 
+        text.Font = Enum.Font.GothamBold
+        text.TextSize = 12
+        text.Parent = bb
+        
+        -- AÑADIDO: Contorno negro para legibilidad
+        local textStroke = Instance.new("UIStroke")
+        textStroke.Color = Color3.fromRGB(0, 0, 0)
+        textStroke.Thickness = 2
+        textStroke.Parent = text
+    end
 
-local AimSwitchBG = Instance.new("TextButton")
-AimSwitchBG.Size = UDim2.new(0, 50, 0, 26)
-AimSwitchBG.Position = UDim2.new(0, 240, 0, 17)
-AimSwitchBG.BackgroundColor3 = Color3.fromRGB(40, 0, 0)
-AimSwitchBG.Text = "OFF"
-AimSwitchBG.TextColor3 = Color3.fromRGB(255, 0, 0)
-AimSwitchBG.Font = Enum.Font.SourceSansBold
-AimSwitchBG.TextSize = 12
-AimSwitchBG.Parent = ContentFrame
-Instance.new("UICorner", AimSwitchBG).CornerRadius = UDim.new(0, 4)
+    if player.Character then task.spawn(setupCharacter, player.Character) end
+    local conn = player.CharacterAdded:Connect(setupCharacter)
+    SpyConnections[player] = conn
+end
 
-AimSwitchBG.MouseButton1Click:Connect(function()
-    Config.AimEnabled = not Config.AimEnabled
-    if Config.AimEnabled then
-        AimSwitchBG.BackgroundColor3 = Color3.fromRGB(150, 0, 0)
-        AimSwitchBG.Text = "ON"
-        AimSwitchBG.TextColor3 = Color3.fromRGB(255, 255, 255)
-        AimButton.Visible = true
+local function removeSpyTags()
+    for player, conn in pairs(SpyConnections) do
+        if conn then conn:Disconnect() end
+        if player.Character and player.Character:FindFirstChild("SpyTag") then
+            player.Character.SpyTag:Destroy()
+        end
+    end
+    table.clear(SpyConnections)
+end
+
+-- Creador de Toggles
+local function createToggle(labelName, yPos, startState, callback)
+    local lbl = Instance.new("TextLabel")
+    lbl.Size = UDim2.new(0, 180, 0, 30)
+    lbl.Position = UDim2.new(0, 20, 0, yPos)
+    lbl.BackgroundTransparency = 1
+    lbl.Text = labelName
+    lbl.TextColor3 = Color3.fromRGB(230, 230, 230)
+    lbl.TextXAlignment = Enum.TextXAlignment.Left
+    lbl.Font = Enum.Font.Gotham
+    lbl.TextSize = 14
+    lbl.Parent = ContentFrame
+
+    local btn = Instance.new("TextButton")
+    btn.Size = UDim2.new(0, 45, 0, 22)
+    btn.Position = UDim2.new(0, 265, 0, yPos + 4)
+    btn.BackgroundColor3 = startState and Color3.fromRGB(200, 0, 0) or Color3.fromRGB(30, 30, 30)
+    btn.Text = startState and "ON" or "OFF"
+    btn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    btn.Font = Enum.Font.GothamBold
+    btn.TextSize = 11
+    btn.Parent = ContentFrame
+    Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 6)
+    
+    local btnStroke = Instance.new("UIStroke")
+    btnStroke.Color = startState and Color3.fromRGB(255, 50, 50) or Color3.fromRGB(60, 60, 60)
+    btnStroke.Thickness = 1
+    btnStroke.Parent = btn
+
+    btn.MouseButton1Click:Connect(function()
+        local newState = btn.Text == "OFF"
+        btn.Text = newState and "ON" or "OFF"
+        btn.BackgroundColor3 = newState and Color3.fromRGB(200, 0, 0) or Color3.fromRGB(30, 30, 30)
+        btnStroke.Color = newState and Color3.fromRGB(255, 50, 50) or Color3.fromRGB(60, 60, 60)
+        callback(newState)
+    end)
+    return btn
+end
+
+-- Toggles del Panel
+createToggle("Bloquear UI", 10, false, function(state)
+    Config.UILocked = state
+end)
+
+createToggle("Spy (ESP)", 45, false, function(state)
+    Config.SpyEnabled = state
+    if state then
+        for _, p in ipairs(Players:GetPlayers()) do createSpyTag(p) end
+        table.insert(DropdownConnections, Players.PlayerAdded:Connect(createSpyTag))
     else
-        AimSwitchBG.BackgroundColor3 = Color3.fromRGB(40, 0, 0)
-        AimSwitchBG.Text = "OFF"
-        AimSwitchBG.TextColor3 = Color3.fromRGB(255, 0, 0)
-        AimButton.Visible = false
-        AimLockActive = false
-        AimButton.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
-        AimButton.TextColor3 = Color3.fromRGB(255, 0, 0)
-        if aimLoopConnection then aimLoopConnection:Disconnect() aimLoopConnection = nil end
-        currentTarget = nil
+        removeSpyTags()
+        for _, conn in ipairs(DropdownConnections) do if conn then conn:Disconnect() end end
+        table.clear(DropdownConnections)
     end
 end)
 
--- [CONFIG BLOQUEAR UI]
-local LockUiLabel = Instance.new("TextLabel")
-LockUiLabel.Size = UDim2.new(0, 180, 0, 30)
-LockUiLabel.Position = UDim2.new(0, 15, 0, 50)
-LockUiLabel.BackgroundTransparency = 1
-LockUiLabel.Text = "Bloquear UI"
-LockUiLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
-LockUiLabel.TextXAlignment = Enum.TextXAlignment.Left
-LockUiLabel.Font = Enum.Font.SourceSans
-LockUiLabel.TextSize = 16
-LockUiLabel.Parent = ContentFrame
+-- CORREGIDO: Ahora inicia en false para que empiece limpio al ejecutar
+createToggle("Habilitar Botón Look", 80, false, function(state)
+    Config.AimEnabled = state
+    LookButton.Visible = state
+end)
 
-local LockUiToggle = Instance.new("TextButton")
-LockUiToggle.Size = UDim2.new(0, 50, 0, 26)
-LockUiToggle.Position = UDim2.new(0, 240, 0, 52)
-LockUiToggle.BackgroundColor3 = Color3.fromRGB(40, 0, 0)
-LockUiToggle.Text = "OFF"
-LockUiToggle.TextColor3 = Color3.fromRGB(255, 0, 0)
-LockUiToggle.Font = Enum.Font.SourceSansBold
-LockUiToggle.TextSize = 14
-LockUiToggle.Parent = ContentFrame
-Instance.new("UICorner", LockUiToggle).CornerRadius = UDim.new(0, 4)
+createToggle("Mostrar Círculo FOV", 115, false, function(state)
+    Config.ShowFOV = state
+    updateFOVVisual()
+end)
 
-LockUiToggle.MouseButton1Click:Connect(function()
-    Config.UILocked = not Config.UILocked
-    if Config.UILocked then
-        LockUiToggle.BackgroundColor3 = Color3.fromRGB(150, 0, 0)
-        LockUiToggle.Text = "ON"
-        LockUiToggle.TextColor3 = Color3.fromRGB(255, 255, 255)
-    else
-        LockUiToggle.BackgroundColor3 = Color3.fromRGB(40, 0, 0)
-        LockUiToggle.Text = "OFF"
-        LockUiToggle.TextColor3 = Color3.fromRGB(255, 0, 0)
+-- Slider de Radio FOV
+local SliderLabel = Instance.new("TextLabel")
+SliderLabel.Size = UDim2.new(0, 120, 0, 20)
+SliderLabel.Position = UDim2.new(0, 20, 0, 160)
+SliderLabel.BackgroundTransparency = 1
+SliderLabel.Text = "Radio FOV: 150"
+SliderLabel.TextColor3 = Color3.fromRGB(200, 200, 200)
+SliderLabel.TextXAlignment = Enum.TextXAlignment.Left
+SliderLabel.Font = Enum.Font.Gotham
+SliderLabel.TextSize = 13
+SliderLabel.Parent = ContentFrame
+
+local SliderBG = Instance.new("Frame")
+SliderBG.Size = UDim2.new(0, 140, 0, 6)
+SliderBG.Position = UDim2.new(0, 170, 0, 167)
+SliderBG.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
+SliderBG.Parent = ContentFrame
+Instance.new("UICorner", SliderBG).CornerRadius = UDim.new(1, 0)
+
+local SliderFill = Instance.new("Frame")
+SliderFill.Size = UDim2.new(0.35, 0, 1, 0)
+SliderFill.BackgroundColor3 = Color3.fromRGB(230, 0, 0)
+SliderFill.Parent = SliderBG
+Instance.new("UICorner", SliderFill).CornerRadius = UDim.new(1, 0)
+
+local SliderBtn = Instance.new("TextButton")
+SliderBtn.Size = UDim2.new(0, 14, 0, 14)
+SliderBtn.Position = UDim2.new(0.35, -7, 0.5, -7)
+SliderBtn.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+SliderBtn.Text = ""
+SliderBtn.Parent = SliderBG
+Instance.new("UICorner", SliderBtn).CornerRadius = UDim.new(1, 0)
+
+local draggingSlider = false
+SliderBtn.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then draggingSlider = true end
+end)
+UserInputService.InputEnded:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then draggingSlider = false end
+end)
+UserInputService.InputChanged:Connect(function(input)
+    if draggingSlider and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+        local mousePos = input.Position.X
+        local sliderX = SliderBG.AbsolutePosition.X
+        local sliderWidth = SliderBG.AbsoluteSize.X
+        local percentage = math.clamp((mousePos - sliderX) / sliderWidth, 0, 1)
+        
+        SliderFill.Size = UDim2.new(percentage, 0, 1, 0)
+        SliderBtn.Position = UDim2.new(percentage, -7, 0.5, -7)
+        
+        Config.FOVSize = math.round(percentage * 390) + 10
+        SliderLabel.Text = "Radio FOV: " .. tostring(Config.FOVSize)
+        updateFOVVisual()
     end
 end)
 
--- [OPCIÓN SPY MEJORADA]
-local SpyLabel = Instance.new("TextLabel")
-SpyLabel.Size = UDim2.new(0, 180, 0, 30)
-SpyLabel.Position = UDim2.new(0, 15, 0, 85) 
-SpyLabel.BackgroundTransparency = 1
-SpyLabel.Text = "Opción Spy"
-SpyLabel.TextColor3 = Color3.fromRGB(255, 0, 0) 
-SpyLabel.Font = Enum.Font.SourceSansBold 
-SpyLabel.TextSize = 18 
-SpyLabel.TextXAlignment = Enum.TextXAlignment.Left
-SpyLabel.Parent = ContentFrame
-
-local SpyToggle = Instance.new("TextButton")
-SpyToggle.Size = UDim2.new(0, 50, 0, 26)
-SpyToggle.Position = UDim2.new(0, 240, 0, 87)
-SpyToggle.BackgroundColor3 = Color3.fromRGB(40, 0, 0)
-SpyToggle.Text = "OFF"
-SpyToggle.TextColor3 = Color3.fromRGB(255, 0, 0)
-SpyToggle.Font = Enum.Font.SourceSansBold
-SpyToggle.TextSize = 14
-SpyToggle.Parent = ContentFrame
-Instance.new("UICorner", SpyToggle).CornerRadius = UDim.new(0, 4)
-
-SpyToggle.MouseButton1Click:Connect(function()
-    Config.SpyEnabled = not Config.SpyEnabled
-    if Config.SpyEnabled then
-        SpyToggle.BackgroundColor3 = Color3.fromRGB(150, 0, 0)
-        SpyToggle.Text = "ON"
-        SpyToggle.TextColor3 = Color3.fromRGB(255, 255, 255)
-    else
-        SpyToggle.BackgroundColor3 = Color3.fromRGB(40, 0, 0)
-        SpyToggle.Text = "OFF"
-        SpyToggle.TextColor3 = Color3.fromRGB(255, 0, 0)
-    end
-end)
-
--- ========================================================
--- NUEVA SECCIÓN: WHITELIST DESPLEGABLE DINÁMICA
--- ========================================================
-local WhitelistLabel = Instance.new("TextLabel")
-WhitelistLabel.Size = UDim2.new(0, 150, 0, 30)
-WhitelistLabel.Position = UDim2.new(0, 15, 0, 125)
-WhitelistLabel.BackgroundTransparency = 1
-WhitelistLabel.Text = "Whitelist"
-WhitelistLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
-WhitelistLabel.Font = Enum.Font.SourceSansBold
-WhitelistLabel.TextSize = 17
-WhitelistLabel.TextXAlignment = Enum.TextXAlignment.Left
-WhitelistLabel.Parent = ContentFrame
-
+-- Botón Principal "Friends v"
 local DropdownBtn = Instance.new("TextButton")
-DropdownBtn.Size = UDim2.new(0, 110, 0, 28)
-DropdownBtn.Position = UDim2.new(0, 180, 0, 126)
+DropdownBtn.Size = UDim2.new(0, 140, 0, 28)
+DropdownBtn.Position = UDim2.new(0, 170, 0, 200)
 DropdownBtn.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
-DropdownBtn.Text = "Seleccionar v"
-DropdownBtn.TextColor3 = Color3.fromRGB(255, 0, 0)
-DropdownBtn.Font = Enum.Font.SourceSansBold
+DropdownBtn.Text = "Friends v"
+DropdownBtn.TextColor3 = Color3.fromRGB(255, 60, 60)
+DropdownBtn.Font = Enum.Font.GothamBold
 DropdownBtn.TextSize = 13
 DropdownBtn.Parent = ContentFrame
-Instance.new("UICorner", DropdownBtn).CornerRadius = UDim.new(0, 4)
+Instance.new("UICorner", DropdownBtn).CornerRadius = UDim.new(0, 6)
 
--- Contenedor scrolleable de jugadores (ZIndex alto para sobreponerse)
+local dropStroke = Instance.new("UIStroke")
+dropStroke.Color = Color3.fromRGB(60, 20, 20)
+dropStroke.Thickness = 1
+dropStroke.Parent = DropdownBtn
+
+-- Ventana Desplegable del Dropdown
 local DropdownFrame = Instance.new("ScrollingFrame")
-DropdownFrame.Size = UDim2.new(0, 140, 0, 100)
-DropdownFrame.Position = UDim2.new(0, 150, 0, 155)
-DropdownFrame.BackgroundColor3 = Color3.fromRGB(10, 10, 10)
-DropdownFrame.BorderSizePixel = 1
-DropdownFrame.BorderColor3 = Color3.fromRGB(255, 0, 0)
+DropdownFrame.Size = UDim2.new(0, 140, 0, 150) -- Un poco más alta para ver mejor la lista
+DropdownFrame.Position = UDim2.new(0.5, 185, 0.5, -75) -- CORRECCIÓN: Posicionada a la derecha del panel
+DropdownFrame.BackgroundColor3 = Color3.fromRGB(15, 15, 15)
+DropdownFrame.BorderSizePixel = 0
 DropdownFrame.Visible = false
 DropdownFrame.ZIndex = 10
-DropdownFrame.ScrollBarThickness = 6 -- Ajuste visual opcional para que se vea mejor
-DropdownFrame.CanvasSize = UDim2.new(0, 0, 0, 0) -- Se inicializa vacío
+DropdownFrame.ScrollBarThickness = 4
+DropdownFrame.CanvasSize = UDim2.new(0, 0, 0, 0) 
 DropdownFrame.Parent = ScreenGui 
 
-local UIList = Instance.new("UIListLayout", DropdownFrame)
+local frameStroke = Instance.new("UIStroke")
+frameStroke.Color = Color3.fromRGB(200, 0, 0)
+frameStroke.Thickness = 1
+frameStroke.Parent = DropdownFrame
+Instance.new("UICorner", DropdownFrame).CornerRadius = UDim.new(0, 6)
 
--- CORRECCIÓN AQUÍ: Forzamos al Canvas a medir EXACTAMENTE lo que midan los elementos sumados
+local UIList = Instance.new("UIListLayout", DropdownFrame)
 UIList:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
     DropdownFrame.CanvasSize = UDim2.new(0, 0, 0, UIList.AbsoluteContentSize.Y)
 end)
 
+-- Función para refrescar la lista de jugadores
 local function RefreshWhitelistDropdown()
-    for _, item in ipairs(DropdownFrame:GetChildren()) do
-        if item:IsA("TextButton") then item:Destroy() end
-    end
-    
+    for _, item in ipairs(DropdownFrame:GetChildren()) do if item:IsA("TextButton") then item:Destroy() end end
+
     for _, player in ipairs(Players:GetPlayers()) do
         if player ~= LocalPlayer then
             local item = Instance.new("TextButton")
             item.Size = UDim2.new(1, 0, 0, 25)
             item.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
             item.BorderSizePixel = 0
-            item.Text = player.Name
+            item.Text = " " .. player.Name
             item.ZIndex = 11
-            
-            -- Si ya está en la whitelist se vuelve verde, si no, blanco
-            if Config.Whitelist[player.Name] then
-                item.TextColor3 = Color3.fromRGB(0, 255, 0)
-                item.Font = Enum.Font.SourceSansBold
-            else
-                item.TextColor3 = Color3.fromRGB(255, 255, 255)
-                item.Font = Enum.Font.SourceSans
-            end
-            item.TextSize = 13
+            item.TextColor3 = Config.Whitelist[player.Name] and Color3.fromRGB(0, 255, 100) or Color3.fromRGB(200, 200, 200)
+            item.Font = Config.Whitelist[player.Name] and Enum.Font.GothamBold or Enum.Font.Gotham
+            item.TextXAlignment = Enum.TextXAlignment.Left
+            item.TextSize = 11
             item.Parent = DropdownFrame
-            
+
             item.MouseButton1Click:Connect(function()
                 if Config.Whitelist[player.Name] then
                     Config.Whitelist[player.Name] = nil
-                    item.TextColor3 = Color3.fromRGB(255, 255, 255)
-                    item.Font = Enum.Font.SourceSans
+                    item.TextColor3 = Color3.fromRGB(200, 200, 200)
+                    item.Font = Enum.Font.Gotham
                 else
                     Config.Whitelist[player.Name] = true
-                    item.TextColor3 = Color3.fromRGB(0, 255, 0)
-                    item.Font = Enum.Font.SourceSansBold
+                    item.TextColor3 = Color3.fromRGB(0, 255, 100)
+                    item.Font = Enum.Font.GothamBold
                 end
             end)
         end
@@ -319,125 +441,70 @@ end
 
 DropdownBtn.MouseButton1Click:Connect(function()
     DropdownFrame.Visible = not DropdownFrame.Visible
-    if DropdownFrame.Visible then
-        RefreshWhitelistDropdown()
+    if DropdownFrame.Visible then RefreshWhitelistDropdown() end
+end)
+
+MainToggleButton.MouseButton1Click:Connect(function()
+    MainFrame.Visible = not MainFrame.Visible
+    if not MainFrame.Visible then 
+        DropdownFrame.Visible = false 
     end
 end)
 
--- Cerrar lista si se cierra el menú principal
-MainToggleButton.MouseButton1Click:Connect(function()
-    if not MainFrame.Visible then DropdownFrame.Visible = false end
-end)
-
--- ========================================================
--- LÓGICA DE FIJACIÓN (AIMBOT CON FILTRO WHITELIST)
--- ========================================================
-local function getClosestPlayerToCenter()
-    local closestPlayer = nil
+-- Lógica de adquisición de objetivos
+local function getTargetInFOV()
+    local closestPart = nil
     local shortestDistance = math.huge
     local screenCenter = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
 
     for _, player in ipairs(Players:GetPlayers()) do
         if player ~= LocalPlayer and not Config.Whitelist[player.Name] then
             local char = player.Character
-            if char and char:FindFirstChild("HumanoidRootPart") and char:FindFirstChild("Humanoid") and char.Humanoid.Health > 0 then
-                local hrp = char.HumanoidRootPart
-                local vector, onScreen = Camera:WorldToViewportPoint(hrp.Position)
-                
-                if onScreen then
-                    local distance = (Vector2.new(vector.X, vector.Y) - screenCenter).Magnitude
-                    if distance < shortestDistance then
-                        shortestDistance = distance
-                        closestPlayer = hrp
-                    end
-                end
-            end
-        end
-    end
-    return closestPlayer
-end
-
-local function startAimTracking()
-    if aimLoopConnection then aimLoopConnection:Disconnect() end
-    
-    aimLoopConnection = RunService.RenderStepped:Connect(function()
-        if AimLockActive and currentTarget and currentTarget.Parent and currentTarget.Parent:FindFirstChild("Humanoid") and currentTarget.Parent.Humanoid.Health > 0 and not Config.Whitelist[currentTarget.Parent.Name] then
-            Camera.CFrame = CFrame.new(Camera.CFrame.Position, currentTarget.Position)
-        else
-            AimLockActive = false
-            AimButton.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
-            AimButton.TextColor3 = Color3.fromRGB(255, 0, 0)
-            if aimLoopConnection then aimLoopConnection:Disconnect() aimLoopConnection = nil end
-            currentTarget = nil
-        end
-    end)
-end
-
-AimButton.MouseButton1Click:Connect(function()
-    if not Config.AimEnabled then return end
-    AimLockActive = not AimLockActive
-    
-    if AimLockActive then
-        local target = getClosestPlayerToCenter()
-        if target then
-            currentTarget = target
-            AimButton.BackgroundColor3 = Color3.fromRGB(255, 0, 0)
-            AimButton.TextColor3 = Color3.fromRGB(255, 255, 255)
-            startAimTracking()
-        else
-            AimLockActive = false
-            currentTarget = nil
-        end
-    else
-        AimButton.BackgroundColor3 = Color3.fromRGB(0, 0, 0) 
-        AimButton.TextColor3 = Color3.fromRGB(255, 0, 0)
-        if aimLoopConnection then aimLoopConnection:Disconnect() aimLoopConnection = nil end
-        currentTarget = nil
-    end
-end)
-
--- ========================================================
--- RASTREADOR SPY SAFE
--- ========================================================
-task.spawn(function()
-    while true do
-        task.wait(1)
-        pcall(function()
-            if Config.SpyEnabled then
-                for _, player in ipairs(Players:GetPlayers()) do
-                    if player ~= LocalPlayer and player.Character and player.Character:FindFirstChild("Head") then
-                        local head = player.Character.Head
-                        local existingTag = head:FindFirstChild("SpyTag")
+            if char and char:FindFirstChild("Humanoid") and char.Humanoid.Health > 0 and (not char:FindFirstChild("BodyEffects") or (char:FindFirstChild("BodyEffects") and not char.BodyEffects:FindFirstChild("K.O") or char.BodyEffects["K.O"].Value == false)) then
+                local targetPart = char:FindFirstChild("Head")
+                if targetPart then
+                    local vector, onScreen = Camera:WorldToViewportPoint(targetPart.Position)
+                    if onScreen then
+                        local distance = (Vector2.new(vector.X, vector.Y) - screenCenter).Magnitude
                         
-                        if not existingTag then
-                            local billboard = Instance.new("BillboardGui")
-                            billboard.Name = "SpyTag"
-                            billboard.Size = UDim2.new(0, 140, 0, 26)
-                            billboard.AlwaysOnTop = true
-                            billboard.ExtentsOffset = Vector3.new(0, 2.2, 0)
-                            billboard.Parent = head
-                            
-                            local label = Instance.new("TextLabel")
-                            label.Size = UDim2.new(1, 0, 1, 0)
-                            label.BackgroundTransparency = 1
-                            label.Text = player.Name
-                            label.TextColor3 = Color3.fromRGB(255, 0, 0)
-                            label.TextSize = 14
-                            label.Font = Enum.Font.SourceSansBold
-                            label.Parent = billboard
-                        else
-                            existingTag.Enabled = true
+                        if distance <= Config.FOVSize and distance < shortestDistance then
+                            shortestDistance = distance
+                            closestPart = targetPart
                         end
                     end
                 end
-            else
-                for _, player in ipairs(Players:GetPlayers()) do
-                    if player.Character and player.Character:FindFirstChild("Head") then
-                        local tag = player.Character.Head:FindFirstChild("SpyTag")
-                        if tag then tag.Enabled = false end
-                    end
-                end
             end
-        end)
+        end
+    end
+    return closestPart
+end
+
+-- Sistema Look (Aimlock)
+RunService.RenderStepped:Connect(function()
+    if LookActive and currentLookTarget and currentLookTarget.Parent and currentLookTarget.Parent:FindFirstChild("Humanoid") and currentLookTarget.Parent.Humanoid.Health > 0 then
+        Camera.CFrame = CFrame.new(Camera.CFrame.Position, currentLookTarget.Position)
     end
 end)
+
+LookButton.MouseButton1Click:Connect(function()
+    LookActive = not LookActive
+    if LookActive then
+        local target = getTargetInFOV() 
+        if target then
+            currentLookTarget = target
+            LookButton.BackgroundColor3 = Color3.fromRGB(180, 0, 0)
+            LookButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+        else
+            LookActive = false
+            LookButton.BackgroundColor3 = Color3.fromRGB(15, 15, 15)
+            LookButton.TextColor3 = Color3.fromRGB(255, 50, 50)
+            currentLookTarget = nil
+        end
+    else
+        LookButton.BackgroundColor3 = Color3.fromRGB(15, 15, 15)
+        LookButton.TextColor3 = Color3.fromRGB(255, 50, 50)
+        currentLookTarget = nil
+    end
+end)
+
+updateFOVVisual()
